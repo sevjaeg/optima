@@ -1,0 +1,3 @@
+../adder.v
+../register.v
+adder_tb.sv

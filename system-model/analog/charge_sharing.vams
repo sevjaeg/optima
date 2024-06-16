@@ -1,0 +1,83 @@
+`include "disciplines.vams"
+`include "constants.vams"
+
+`include "timescale.v"
+
+module charge_sharing #(
+  parameter real T0       = 0.2,
+  parameter real T_DELTA  = 0.05,
+  parameter real T_SUM    = 0.2,
+  parameter real C        = 150e-15,
+  parameter integer WIDTH = 4
+) (
+  input                        start,
+  inout electrical [WIDTH-1:0] v_blb_a,
+  inout electrical             v_sum_a
+);
+
+  reg [WIDTH-1:0]        sample_blb   = 0;
+  reg                    share_charge = 1'b0;
+
+  electrical [WIDTH-1:0] v_blb_sampled_a;
+
+  // control logic (fully behavioural)
+
+  integer j;
+  integer delay_units;
+
+  always @(posedge start) begin
+    # (2*T_DELTA); // avoid conflict as SRAM drives bit lines already with sampling delay
+
+    for (j=0; j<WIDTH; j=j+1) begin
+      sample_blb[j] = 1'b1;
+    end
+    # T0;
+    delay_units = 1;
+    for (j=0; j<WIDTH-1; j=j+1) begin
+      sample_blb[j] = 1'b0;
+      # (T0*delay_units);
+      delay_units = 2 * delay_units;
+    end
+    sample_blb[WIDTH-1] = 1'b0;  // avoid long delay be moving this out of the loop
+
+    # T_DELTA;
+    share_charge = 1'b1;
+    # T_SUM;
+    share_charge = 1'b0;
+  end
+
+  genvar i;
+
+  // Switches on BLB
+
+  analog begin
+    for (i=0; i<WIDTH; i=i+1) begin
+      if(sample_blb[i]) begin
+        V(v_blb_sampled_a[i], v_blb_a[i]) <+ 0.0;
+      end else begin
+        I(v_blb_sampled_a[i], v_blb_a[i]) <+ 0.0;
+      end
+    end
+  end
+
+  // BLB sampling capacitors (required for drive strength)
+
+  analog begin
+    for (i=0; i<WIDTH; i=i+1) begin
+      V(v_blb_sampled_a[i]) <+ idt(I(v_blb_sampled_a[i]))/C;
+    end
+  end
+
+  // Switches between BLB sampling caps and sum
+
+  analog begin
+    for (i=0; i<WIDTH; i=i+1) begin
+      if(share_charge) begin
+        V(v_blb_sampled_a[i], v_sum_a) <+ 0.0;
+      end else begin
+        I(v_blb_sampled_a[i], v_sum_a) <+ 0.0;
+      end
+    end
+  end
+
+endmodule

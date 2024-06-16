@@ -1,0 +1,171 @@
+`include "disciplines.vams"
+`include "constants.vams"
+
+`include "timescale.v"
+`include "util.v"
+
+module test;
+  localparam CLOCK_PERIOD  = 10;  // 100 MHz
+  localparam ADC_BIT_WIDTH = 4;
+  localparam DAC_BIT_WIDTH = 4;
+  localparam real VDD      = 1.0;
+
+  reg clk  = 0;
+  reg rstn = 0;
+
+  integer read_data = 0;
+
+  voltage v_analog;
+
+  electrical gnd, vdd;
+  ground gnd;
+
+  // DAC
+  reg [DAC_BIT_WIDTH-1:0] dac_data  = 0;
+  reg                     dac_valid = 0;
+  voltage                 dac_v_out;
+
+  // ADC
+  reg                      adc_capture = 0;
+  wire                     adc_capture_delayed;
+  wire [ADC_BIT_WIDTH-1:0] adc_data;
+  wire [ADC_BIT_WIDTH-1:0] adc_data_r;
+  
+  analog begin
+    V(vdd, gnd) <+ VDD;
+  end
+
+  // Clock generation
+  always begin
+    #(0.5*CLOCK_PERIOD) clk = 1;
+    #(0.5*CLOCK_PERIOD) clk = 0;
+  end
+  
+  // Test case sequence
+  initial begin
+    repeat(2) @(posedge clk);
+    $display("%7t ps: Starting tests", $realtime);
+    rstn = 1;
+    
+    DACStart(0);
+    `NextCycle(clk, 0.1*CLOCK_PERIOD)
+    ADCTrigger;
+    DACStop;
+    repeat(2) `NextCycle(clk, 0.1*CLOCK_PERIOD)
+    ADCGetData(read_data);
+
+    DACStart(2**DAC_BIT_WIDTH - 1);
+    `NextCycle(clk, 0.1*CLOCK_PERIOD)
+    ADCTrigger;
+    DACStop;
+    repeat(2) `NextCycle(clk, 0.1*CLOCK_PERIOD)
+    ADCGetData(read_data);
+
+
+    DACStart(6);
+    `NextCycle(clk, 0.1*CLOCK_PERIOD)
+    ADCTrigger;
+    DACStop;
+    repeat(2) `NextCycle(clk, 0.1*CLOCK_PERIOD)
+    ADCGetData(read_data);
+
+    DACStart(25);
+    `NextCycle(clk, 0.1*CLOCK_PERIOD)
+    ADCTrigger;
+    DACStop;
+    repeat(2) `NextCycle(clk, 0.1*CLOCK_PERIOD)
+    ADCGetData(read_data);
+
+    repeat(10) @(posedge clk);
+    $display("%7t ps: Finishing simulation", $realtime);
+    $finish;
+  end
+  
+  dac #(
+    .BIT_WIDTH  (DAC_BIT_WIDTH),
+    .V_FULLSCALE(VDD),
+    .V_ZERO(0.2*VDD)
+  )
+  i_dac (
+    .clk    (clk),
+    .data_i (dac_data),
+    .v_ao   (v_analog),
+    .valid_i(dac_valid)
+  );
+  
+  adc #(
+    .BIT_WIDTH  (ADC_BIT_WIDTH),
+    .V_FULLSCALE(VDD),
+    .V_ZERO(0.1*VDD)
+  )
+  i_adc (
+    .capture_i(adc_capture),
+    .clk      (clk),
+    .rstn     (rstn),
+    .data_o   (adc_data),
+    .v_ai     (v_analog)
+  );
+  
+  register #(
+    .WIDTH          (1)
+  )
+  i_reg_delay_adc_capture (
+    .clk    (clk),
+    .data_i (adc_capture),
+    .data_o (adc_capture_delayed),
+    .rstn   (rstn),
+    .valid_i(),
+    .valid_o()
+  );
+ 
+  register #(
+    .WIDTH(ADC_BIT_WIDTH),
+    .VALID_IS_ENABLE(1)
+  )
+  i_reg_adc(
+    .clk    (clk),
+    .data_i (adc_data),
+    .data_o (adc_data_r),
+    .rstn   (rstn),
+    .valid_i(adc_capture_delayed),
+    .valid_o()
+  );
+
+  task DACStart(
+    input integer data
+  );
+  begin
+    $display("%7t ps: DAC output %3x", $realtime, data);
+    if ($unsigned(data) > 2**DAC_BIT_WIDTH -1) begin
+      $warning("DAC write data %3x larger than DAC resolution. The MSB(s) are truncated.", data);
+    end
+    dac_data = data[DAC_BIT_WIDTH-1:0];
+    dac_valid = 1;
+  end
+  endtask
+
+  // make sure to wait for at least 1 clock cycle after DACStart to observe any effect
+  task DACStop;
+  begin
+    dac_valid = 0;
+  end
+  endtask
+  
+  task ADCTrigger;
+  begin
+    adc_capture = 1;
+  end
+  endtask 
+
+  // make sure to wait for at least 2 clock cycle after ADCTrigger to observe any effect
+  task ADCGetData(
+    output integer data
+  );
+  begin
+    adc_capture = 0;
+    data = adc_data_r;
+    $display("%7t ps: ADC captured %3x", $realtime, data);
+  end
+  endtask
+  
+endmodule

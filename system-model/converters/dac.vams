@@ -1,0 +1,65 @@
+`include "disciplines.vams"
+`include "constants.vams"
+
+`include "timescale.v"
+
+module dac #(
+  parameter integer BIT_WIDTH  = 8,
+  parameter real V_FULLSCALE   = 1.0,
+  parameter real V_ZERO        = 0.0,
+  parameter DEBUG              = 1'b0
+)(
+  input clk,
+  input [BIT_WIDTH-1:0] data_i,
+  input valid_i,
+  output reg [63:0] energy_o,
+  output electrical v_ao
+);
+  /*
+   * Delay model: Transport delay
+   * The DAC receives data sequentially with the clock. Then it takes some
+   * constant time to settle the output.
+   */
+  localparam real DELAY = 3.0;  // ns
+  // localparam        AID   = 0;
+
+  integer i, weight;
+  real    v;
+  real    v_analog;
+
+  always @(posedge clk) begin
+    if (valid_i) begin
+      v = V_ZERO;
+      weight = 2;
+      // MSB down to LSB
+      for (i=BIT_WIDTH-1; i>=0; i=i-1) begin
+        if (data_i[i]) begin
+          v = v + (V_FULLSCALE-V_ZERO)/weight;
+        end
+        weight = weight * 2;
+      end
+
+      // if(AID) begin
+      //   v = V_ZERO + V_FULLSCALE*(0.7/$sqrt(0.046*(2**BIT_WIDTH-1)) * $sqrt(0.046*data_i));
+      //   // Wolfram Alpha: table 0.3+ 0.7*1/sqrt(15*0.046)*sqrt(0.046*x) from 0 to 15
+      // end else begin
+        // offset by V_lsb/2
+      v = v +  (V_FULLSCALE-V_ZERO)/weight;
+      // end
+      if (DEBUG) begin
+        $display("v_dac: %d, %f V", data_i, v);
+      end
+      // energy_o = $realtobits(1e-12*0.42*exp(0.3*BIT_WIDTH));
+      energy_o = $realtobits(1e-12*0.079*(0.42/0.71)*exp(0.29*BIT_WIDTH));  // AID based
+      #(DELAY) v_analog <= v;
+    end else begin
+      #(DELAY) v_analog <= 0.0;
+      energy_o = $realtobits(0.0);
+    end
+  end
+
+  analog begin
+    V(v_ao) <+ v_analog;
+  end
+
+endmodule

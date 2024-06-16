@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!DOCTYPE waivers PUBLIC "-//DVT//waivers" "waivers.dtd">
+<waivers>
+  <waiver name="Disable by message" severity="DISABLED">
+    <match message="*JUST_A_FOO_PROBLEM"/>
+    <description>This waiver disables all problems containing 'JUST_A_FOO_PROBLEM' inside their message.</description>
+  </waiver>
+  <waiver name="Demote by path" severity="WARNING">
+    <match path="/path/to/foo/*"/>
+    <description>This waiver turns into warnings all problems reported under '/path/to/foo'.</description>
+  </waiver>
+  <waiver name="Promote by path OR message" severity="ERROR">
+    <match path="/path/to/foo/*" message="*JUST_A_FOO_PROBLEM"/>
+    <description>This waiver turns into errors all problems that contain 'JUST_A_FOO_PROBLEM' inside their message OR were reported under '/path/to/foo'.</description>
+  </waiver>
+  <waiver name="Disable by path AND message" severity="DISABLED">
+    <match message="*JUST_A_FOO_PROBLEM"/>
+    <description>This waiver disables all problems that contain 'JUST_A_FOO_PROBLEM' inside their message AND were reported under '/path/to/foo'.</description>
+  </waiver>
+  <waiver name="WIDTH_MISMATCH_PADDING" severity="DISABLED">
+    <match path="/home/sjaeger/msc/virtuoso-playground/verilog-ams/test.vams" message="WIDTH_MISMATCH_PADDING: Assignment to 'data' of '32-bit' type from 'adc_data' of '8-bit' type"/>
+    <description>works up to 32 bits, ADCs will stay smaller anyways</description>
+  </waiver>
+  <waiver name="UNDECLARED_SYSTEM_METHOD" severity="DISABLED">
+    <match path="/home/sjaeger/msc/virtuoso-playground/verilog-ams/sram/sram.vams" message="UNDECLARED_SYSTEM_METHOD: System task or function '$rdist_normal' is not declared"/>
+    <description>ADSM finds the function</description>
+  </waiver>
+  <waiver name="SIGNAL_MULTIPLE_DRIVERS" severity="DISABLED">
+    <match path="/home/sjaeger/msc/virtuoso-playground/verilog-ams/sram/sram.vams" message="SIGNAL_MULTIPLE_DRIVERS: Signal 'j' has multiple drivers"/>
+    <description>its only a loop index</description>
+  </waiver>
+  <waiver name="SIGNAL_MULTIPLE_DRIVERS" severity="DISABLED">
+    <match path="/home/sjaeger/msc/virtuoso-playground/verilog-ams/test.vams" message="SIGNAL_MULTIPLE_DRIVERS: Signal 'clk' has multiple drivers"/>
+    <description>the initial value theoretically conflicts with the clock generation, no issue in simulation</description>
+  </waiver>
+  <waiver name="ASSIGNMENT_BLOCKING" severity="DISABLED">
+    <match path="/home/sjaeger/msc/virtuoso-playground/verilog-ams/sram/sram.vams"/>
+    <description>The controller is full of immediate assignments despite being synchronous to the clock. It wont be synthesised anyways</description>
+  </waiver>
+  <waiver name="SIGNAL_MULTIPLE_DRIVERS" severity="DISABLED">
+    <match path="/home/sjaeger/msc/virtuoso-playground/verilog-ams/analog/charge_sharing.vams" message="SIGNAL_MULTIPLE_DRIVERS: Signal 'share_charge' has multiple drivers"/>
+  </waiver>
+  <waiver name="SIGNAL_MULTIPLE_DRIVERS" severity="DISABLED">
+    <match path="/home/sjaeger/msc/virtuoso-playground/verilog-ams/analog/charge_sharing.vams" message="SIGNAL_MULTIPLE_DRIVERS: Signal 'rst' has multiple drivers"/>
+  </waiver>
+  <waiver name="SIGNAL_MULTIPLE_DRIVERS" severity="DISABLED">
+    <match path="/home/sjaeger/msc/virtuoso-playground/verilog-ams/analog/charge_sharing.vams" message="SIGNAL_MULTIPLE_DRIVERS: Signal 'i' has multiple drivers"/>
+  </waiver>
+  <waiver name="FEEDTHROUGH_DETECTED" severity="DISABLED">
+    <match path="/home/sjaeger/msc/virtuoso-playground/verilog-ams/digital/adder.v" message="FEEDTHROUGH_DETECTED: Feedthrough from 'valid_i' to 'valid_o'"/>
+  </waiver>
+  <waiver name="ASSIGNMENT_BLOCKING" severity="DISABLED">
+    <match path="/home/sjaeger/msc/virtuoso-playground/verilog-ams/ms_top.vams" message="ASSIGNMENT_BLOCKING: Blocking assignment of 'next_state' in sequential logic (use non-blocking assignment)"/>
+  </waiver>
+  <waiver name="ASSIGNMENT_BLOCKING" severity="DISABLED">
+    <match path="/home/sjaeger/msc/virtuoso-playground/verilog-ams/ms_top.vams" message="ASSIGNMENT_BLOCKING: Blocking assignment of 'done' in sequential logic (use non-blocking assignment)"/>
+  </waiver>
+  <waiver name="INTERNAL_GENERATED_CLOCK" severity="DISABLED">
+    <match path="/home/sjaeger/msc/virtuoso-playground/verilog-ams/tb/tb_top.sv" message="INTERNAL_GENERATED_CLOCK: Clock signal 'clk' is not an input port"/>
+  </waiver>
+</waivers>

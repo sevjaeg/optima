@@ -1,0 +1,16 @@
+# Automatically identify and compile all the source files in the project directory.
+# DO NOT explicitly list files/directories in 'dvt_init_auto' sections. Use 'dvt_init' sections instead.
++dvt_init
+
++incdir+/eda/mentor/2020-21/RHELx86/AMSV_2020.4/amsv/include/veriloga
++incdir+include
++dvt_skip_compile+**/work/*
+
+-ams
+
+analog/*.vams
+digital/*.v
+converters/*.vams
+sram/sram.vams
+ms_top.vams
+tb/tb_top.sv

@@ -1,0 +1,42 @@
+`include "disciplines.vams"
+`include "constants.vams"
+
+`include "timescale.v"
+
+module accumulator #(
+  parameter real C_SAMPLE = 2.5e-15,
+  parameter real C_ACC    = 20e-15,
+  parameter real V_TH_M9  = 0.6
+) (
+  input                        clk,
+  input                        reset,
+  input                        capture,
+  inout electrical             v_in_a,
+  inout electrical             v_out_a
+);
+
+  real v_out, v_delta;
+  
+  always @(posedge clk) begin
+    if(reset) begin
+      v_out <= 0.0;
+    end else begin
+      if(capture & (V(v_in_a) > V_TH_M9)) begin
+        $display("Accumulating %f with acc charge %f", V(v_in_a), v_out);
+        v_delta = C_SAMPLE * (V(v_in_a) - V_TH_M9) / C_ACC;
+      end else begin 
+        v_delta = 0.0;
+      end
+      if ((V(v_out_a) + v_delta) > V_TH_M9) begin
+        v_out <= V_TH_M9;
+      end else begin
+        v_out <= v_out + v_delta;
+      end
+    end
+  end
+
+  analog begin
+    V(v_out_a) <+ v_out;
+  end
+
+endmodule

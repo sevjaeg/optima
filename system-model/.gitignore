@@ -1,0 +1,19 @@
+work/
+out/
+modelsim.ini
+transcript*
+wlft*
+*.wlf
+*.vstf
+ezwave_*.log
+*.cir
+test_*
+*.error
+*stacktrace*
+
+# DVT
+.dvt/*auto*
+dvt*.log
+
+# EDA server
+*.ict.tuwien.ac.at

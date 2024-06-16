@@ -1,0 +1,70 @@
+`include "disciplines.vams"
+`include "constants.vams"
+
+`include "timescale.v"
+
+module adc #(
+  parameter integer BIT_WIDTH = 8,
+  parameter real V_FULLSCALE  = 1.0,
+  parameter real V_ZERO       = 0.0,
+  parameter SEED              = 41,
+  parameter DEBUG             = 1'b0,
+  parameter real INPUT_NOISE  = 0.9*1e-3  // [V]
+)(
+  input clk,
+  input rstn,
+  input capture_i,
+  output [BIT_WIDTH-1:0] data_o,
+  output reg [63:0] energy_o,
+  input electrical v_ai
+);
+  /*
+   * Delay model: Sample & hold element
+   * The data is sampled at the clock edge, then changes are not considered any longer
+   * The ADC then takes some time to come to its digital output
+   *
+   * Delay figure from Ali2020 (currently constant, value for 4 bits)
+   */
+  localparam real DELAY = 5;  // ns
+
+  integer i;
+  real    threshold;
+  real    v, noise;
+  integer random_seed = SEED;
+
+  reg [BIT_WIDTH-1:0] data_r;
+  reg [BIT_WIDTH-1:0] data;
+
+  always @(posedge clk) begin
+    if (!rstn) begin
+      data_r <= 0;
+      energy_o = 0.0;
+    end else begin
+      if (capture_i) begin
+        threshold = 0.5*(V_FULLSCALE-V_ZERO);
+        noise = INPUT_NOISE * (1e-9*$dist_normal(random_seed, 0, 1E9));
+        v = V(v_ai) - V_ZERO + noise;
+        // MSB down to LSB
+        for (i=BIT_WIDTH-1; i>=0; i=i-1) begin
+          if (v > threshold) begin
+            data[i] = 1'b1;
+            v = v - threshold;
+          end else begin
+            data[i] = 1'b0;
+          end
+          threshold = threshold/2;
+        end
+        if (DEBUG) begin
+          $display("%7t ps: v_adc: %d, %f V", $realtime, data,  V(v_ai) );
+        end
+        // energy_o = $realtobits(1e-12*0.71*exp(0.29*BIT_WIDTH));
+        energy_o = $realtobits(1e-12*0.079*exp(0.29*BIT_WIDTH));  // AID based
+      end else begin
+        data = data_r;
+      end
+      data_r <= data;
+    end
+  end
+
+  assign #(DELAY) data_o = 2**(BIT_WIDTH)-1 - data_r;
+endmodule

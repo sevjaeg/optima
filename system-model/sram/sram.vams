@@ -1,0 +1,296 @@
+`include "disciplines.vams"
+`include "constants.vams"
+
+`include "timescale.v"
+`include "util.v"
+`include "defines.v"
+
+module sram #(
+  parameter integer BIT_WIDTH       = 4,
+  parameter integer DISCHARGE_WIDTH = 4,
+  parameter integer ROWS            = 1,
+  parameter integer SEED            = 0,
+  parameter real PRECHARGE_TIME     = 3.0, // ns
+  parameter real WRITE_BL_TIME      = 1.5, // ns
+  parameter real WRITE_WL_TIME      = 1.5, // ns
+  parameter real DISCHARGE_TIME_MIN = 0.2, // ns
+  parameter real DELTA_TIME         = 0.05, // ns,
+  parameter real TEMPERATURE        = 25.0,  // °C
+  parameter      MISMATCH           = 1'b0
+)(
+  input clk,
+  input rstn,
+  input read_i,
+  input read_discharge_i,
+  input write_i,
+  input [$clog2(ROWS):0] addr_i,  // not -1 to have an address line even in the case of a single row
+  input [BIT_WIDTH-1:0] write_data_i,
+  output [BIT_WIDTH-1:0] read_data_o,
+  output reg sampling_start_o,
+  input electrical vdd,
+  input electrical v_wl_ai,
+  output electrical [BIT_WIDTH-1:0] v_blb_ao,
+  output reg [63:0] energy_o
+);
+
+  `include "sram_params.v"
+
+  electrical [ROWS-1:0]  word_lines;
+
+  reg [BIT_WIDTH-1:0] write_data_reg = 0;
+  reg [$clog2(ROWS):0] addr_reg      = 0;
+  reg write_reg = 1'b0;
+  reg read_reg = 1'b0;
+  reg read_discharge_reg = 1'b0;
+
+  real v_wl_target [ROWS-1:0];
+  real v_blb_target [BIT_WIDTH-1:0];
+
+  reg [BIT_WIDTH-1:0] sram [ROWS-1:0];
+  integer i, j;
+
+  genvar k;
+  wire [$clog2(ROWS):0] addr_unsigned;
+  wire [BIT_WIDTH-1 :0] current_data;
+  reg  [BIT_WIDTH-1 :0] output_reg;
+
+  assign addr_unsigned = $unsigned(addr_i);
+  assign current_data  = sram[addr_i];
+  assign read_data_o   = output_reg;
+
+  real en_write = 0.0;
+  real en_discharge = 0.0;
+
+  integer delay = 1;
+  integer random_seed = SEED;
+  real total_sampling_time = 0.0;
+
+  integer is_discharge;
+
+  always @(posedge clk) begin : proc_ctrl
+    if (~rstn) begin
+      for (i=0; i < ROWS; i=i+1) begin
+        sram[i] = 0;
+      end
+      for (i=0; i < BIT_WIDTH; i=i+1) begin
+        v_blb_target[i] = 0.0;
+      end
+      for (i=0; i < ROWS; i=i+1) begin
+        v_wl_target[i] = 0.0;
+      end
+      addr_reg = 0;
+      write_data_reg = 0;
+      output_reg = 0;
+      sampling_start_o = 1'b0;
+      write_reg = 1'b0;
+      read_reg = 1'b0;
+      read_discharge_reg = 1'b0;
+    end else begin
+      addr_reg = addr_i;
+      write_data_reg = write_data_i;
+      write_reg = write_i;
+      read_reg = read_i;
+      read_discharge_reg = read_discharge_i;
+
+      #(0.5*PRECHARGE_TIME-DELTA_TIME);
+      for (i=0; i < BIT_WIDTH; i=i+1) begin
+        v_blb_target[i] = V(vdd);
+      end
+
+      #(0.5*PRECHARGE_TIME);
+
+      if (write_reg) begin
+        en_write = 0.0;
+        # WRITE_BL_TIME;
+        for (i=0; i < BIT_WIDTH; i=i+1) begin
+          v_blb_target[i] = ~write_data_reg[i];
+          en_write = en_write + SampleWriteEnergy(V(vdd), TEMPERATURE);
+        end
+        v_wl_target[addr_reg] = V(vdd);
+        energy_o = $realtobits(en_write);
+        // $display("%7t ps: sram write energy %e",$realtime, en_write);
+        # WRITE_WL_TIME;
+        // $display("%7t ps: write %0h to %0h", $realtime, write_data_reg, addr_reg);
+        sram[addr_reg] = write_data_reg;
+        v_wl_target[addr_reg] = 0.0;
+
+      end else if (read_discharge_reg) begin
+        en_discharge = 0.0;
+        total_sampling_time = 0.0;
+        v_wl_target[addr_reg] = V(v_wl_ai);
+        sampling_start_o = 1'b1;
+
+        for(i=0; i<DISCHARGE_WIDTH; i=i+1) begin
+          delay = $max(1, 2**(i-1));
+          # (delay*DISCHARGE_TIME_MIN);
+          total_sampling_time = total_sampling_time + (delay*DISCHARGE_TIME_MIN);
+          v_wl_target[addr_reg] = V(v_wl_ai);
+          v_blb_target[i] = SampleDischarge(V(v_wl_ai),
+                                            total_sampling_time,
+                                            sram[addr_reg][i],
+                                            V(vdd),
+                                            TEMPERATURE,
+                                            MISMATCH,
+                                            1'b0);
+          en_discharge = en_discharge + SampleDischargeEnergy(V(v_wl_ai), sram[addr_reg][i], V(vdd), TEMPERATURE, total_sampling_time);
+          // $display("%7t ps: sram: i=%0d, j=%0d, t=%f, v=%f, en_tot=%e", $realtime, i, j, total_sampling_time, v_blb_target[i], en_discharge);
+        end
+        energy_o = $realtobits(en_discharge);
+        v_wl_target[addr_reg] = 0.0;
+        sampling_start_o = 1'b0;
+      end else if (read_reg) begin
+        for (i=0; i < BIT_WIDTH; i=i+1) begin
+          v_blb_target[i] = ~sram[addr_reg][i];
+        end
+        # WRITE_WL_TIME;
+        v_wl_target[addr_reg] = V(vdd);
+        # WRITE_BL_TIME;
+        output_reg = sram[addr_reg];
+        // $display("%7t ps: read %0h from %0h", $realtime, output_reg, addr_reg);
+        v_wl_target[addr_reg] = 0.0;
+      end
+      #DELTA_TIME;
+    end
+  end
+
+  // analog begin : analog_wl_in
+  //   @(cross(V(v_wl_ai) > `V_TH));
+  //   if (V(v_wl_ai) > `V_TH) begin
+  //     is_discharge = 1;
+  //   end else begin
+  //     is_discharge = 0;
+  //   end
+  // end
+
+  // Word line voltage
+  analog begin : analog_wl
+    for (k=0; k < ROWS; k=k+1) begin
+      V(word_lines[k]) <+ v_wl_target[k];
+    end
+  end
+
+  // inverted bit line (BLB) voltage
+  analog begin : analog_blb
+    for (k=0; k < BIT_WIDTH; k=k+1) begin
+      V(v_blb_ao[k]) <+ v_blb_target[k];
+    end
+  end
+
+  // Discharge width has to be smaller or equal to SRAM width
+  initial begin
+    if (DISCHARGE_WIDTH > BIT_WIDTH) begin
+      $error("SRAM bit width might not be smaller than discharge width");
+      $finish;
+    end
+  end
+
+  // Ensure read & write do not happen in parallel
+  always @(posedge(clk)) begin
+    if(read_i) begin
+      `assert(write_i, 1'b0)
+      `assert(read_discharge_i, 1'b0)
+    end else if (read_discharge_i) begin
+      `assert(write_i, 1'b0)
+      `assert(read_i, 1'b0)
+    end else if (write_i) begin
+      `assert(read_i, 1'b0)
+      `assert(read_discharge_i, 1'b0)
+    end
+  end
+
+  function real SampleDischarge;
+    input real vwl;
+    input real sampling_time;
+    input      cell_data;
+    input real vdd;
+    input real temperature;
+    input      mismatch;
+    input      debug;
+
+    real ret, vbl_basic, vbl_temp, vbl_mismatch, temperature_offset, sigma, variation, vdd_diff;
+    real t_term, vdd_term, vwl_term;
+
+    begin
+      if (cell_data) begin
+        if (debug) $display("%7t ps: vwl %0f t %0f data %0f vdd %0f temp %0f ", $realtime, vwl, sampling_time, cell_data, vdd, temperature);
+        vdd_diff = vdd - `NOMINAL_VDD;
+        if (vwl <  `V_TH) begin
+          vwl = 0.0;
+        end else begin
+          vwl = vwl  - `V_TH;
+        end
+        t_term = (model_bl_vdd_0 + model_bl_vdd_1 * sampling_time + model_bl_vdd_2 * (sampling_time**2));
+        vwl_term = (model_bl_vdd_3 + model_bl_vdd_4 *  vwl     + model_bl_vdd_5  * (vwl**2) + model_bl_vdd_6 * (vwl**3) + model_bl_vdd_7  * (vwl**4));
+        vdd_term = (model_bl_vdd_8 + model_bl_vdd_9 *  vdd_diff     + model_bl_vdd_10 * (vdd_diff**2));
+        if (debug) $display("%7t ps: t_term %0f vwl_term %0f vdd_term %0f", $realtime, t_term, vwl_term, vdd_term);
+        vbl_basic = vdd +
+                     t_term *
+                     vwl_term *
+                     vdd_term;
+                     if (debug) $display("%7t ps: bl basic %0f", $realtime, vbl_basic);
+        temperature_offset = sampling_time * (temperature-`NOMINAL_TEMP) *
+                    (model_bl_temp_0 + model_bl_temp_1 * vwl + model_bl_temp_2 * (vwl**2) + model_bl_temp_3 * (vwl**3));
+        vbl_temp  = vbl_basic + temperature_offset;
+        if (debug) $display("%7t ps: bl temperature %0f", $realtime, vbl_temp);
+
+        if (mismatch) begin
+          sigma = (model_bl_mismatch_0 + model_bl_mismatch_1 * sampling_time + model_bl_mismatch_2*(sampling_time**3)) *
+                  (model_bl_mismatch_3 + model_bl_mismatch_4 * vwl + model_bl_mismatch_5 * (vwl**2) + model_bl_mismatch_6 * (vwl**3));
+          if (debug) $display("%7t ps: sigma %0f", $realtime, sigma);
+          variation  = sigma * (1e-9*$dist_normal(random_seed, 0, 1E9));
+          if (debug) $display("%7t ps: variation %0f", $realtime, variation);
+          vbl_mismatch = vbl_temp + variation;
+          ret = vbl_mismatch;
+        end else begin
+          ret = vbl_temp;
+        end
+        if (debug) $display("%7t ps: bl unclipped %0f", $realtime, ret);
+        if (ret > vdd) begin
+          SampleDischarge = vdd;
+        end else begin
+          SampleDischarge = ret;
+        end
+      end else begin
+        // no discharge
+        SampleDischarge = vdd;
+      end
+      // $display("%7t ps: Sampled %0f", $realtime, SampleDischarge);
+    end
+  endfunction
+
+  function real SampleWriteEnergy;
+    input real vdd;
+    input real temperature;
+
+    real ret;
+
+    begin
+      ret = (model_en_write_0 + model_en_write_1 * vdd + model_en_write_2 * (vdd**2)) *
+            (1 + model_en_write_3 * temperature);
+      SampleWriteEnergy = ret;
+    end
+  endfunction
+
+  function real SampleDischargeEnergy;
+    input real vwl;
+    input      cell_data;
+    input real vdd;
+    input real temperature;
+    input real discharge_time;
+
+    real ret, vbl, discharge;
+
+    begin
+      vbl = SampleDischarge(vwl, discharge_time, cell_data, vdd, temperature, 0, 0);
+      discharge = vdd - vbl;
+      vwl = vwl - `V_TH;
+
+      discharge = discharge * (1 + cell_data* (model_en_discharge_5 + (model_en_discharge_6*(discharge-`V_TH))) *
+                              (model_en_discharge_7 + model_en_discharge_8 * vwl));
+
+      ret = (model_en_discharge_0 + vdd) * (1 + model_en_discharge_4 * temperature)
+          * (model_en_discharge_1 + model_en_discharge_2 * discharge + model_en_discharge_3 * discharge**2) ;
+      SampleDischargeEnergy = ret;
+    end
+  endfunction
+endmodule

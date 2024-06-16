@@ -1,0 +1,432 @@
+`include "disciplines.vams"
+`include "constants.vams"
+
+`include "timescale.v"
+`include "util.v"
+`include "defines.v"
+
+module ms_top #(
+  parameter real VDD      = 1.0,
+  parameter real TEMPERATURE        = 25.0,  // °C
+  parameter      MISMATCH           = 1'b0,
+  parameter ADC_BIT_WIDTH = 8,
+  parameter ADDER_WIDTH   = ADC_BIT_WIDTH+2,
+  parameter DAC_BIT_WIDTH = 4,
+  parameter DAC_V_ZERO    = `V_TH,
+  parameter DAC_V_FS      = VDD,
+  parameter SRAM_WIDTH    = 4,
+  parameter SRAM_ROWS     = 2,
+  parameter SRAM_ADDR_WIDTH = 2,
+  parameter DELTA_TIME    = 0.05,
+  parameter T0            = 0.2,
+  parameter integer SEED  = 42,
+  parameter MAC_ANALOG    = 0,
+  parameter AID           = 0
+)(
+  input  clk,
+  input  rstn,
+  input  [7:0]                 op_i,
+  input  [SRAM_ADDR_WIDTH-1:0] addr_i,
+  input  [SRAM_WIDTH-1:0]      data_sram_i,
+  input  [DAC_BIT_WIDTH-1:0]   data_dac_i,
+  output [ADDER_WIDTH-1:0]     data_o,
+  output reg [63:0]            v_adc_o,
+  output reg                   done_o,
+  output reg [63:0]            array_energy_o,
+  output reg [63:0]            adc_energy_o,
+  output reg [63:0]            dac_energy_o,
+  output reg [63:0]            dig_energy_o
+);
+
+  // Generate analog signals //////////////////////////////////////////////////
+  electrical gnd, vdd;
+  ground gnd;
+
+  analog begin
+    V(vdd, gnd) <+ VDD;
+  end
+  /////////////////////////////////////////////////////////////////////////////
+
+
+  // DAC
+  reg [DAC_BIT_WIDTH-1:0]     dac_data;
+  reg                         dac_valid;
+  electrical                  dac_out_a;
+  wire [63:0]                 dac_energy;
+
+  // ADC
+  reg                         adc_capture;
+  wire [ADC_BIT_WIDTH-1:0]    adc_data;
+  electrical                  adc_in_a;
+  wire [63:0]                 adc_energy;
+
+  // SRAM
+  reg                         sram_read_discharge;
+  reg                         sram_write;
+  reg [SRAM_WIDTH-1:0]        sram_write_data;
+  reg [$clog2(SRAM_ROWS):0]   sram_addr;
+  wire                        sram_start_capture;
+  electrical                  sram_wl_a;
+  electrical [SRAM_WIDTH-1:0] sram_blb_a;
+  wire [63:0]                 sram_energy;
+
+  // Charge Sharing
+  electrical                  charge_sharing_sum_a;
+
+   // Analog Accumulator
+  electrical                  accumulator_out_a;
+  reg                         accumulator_capture = 1'b0;
+  reg                         accumulator_reset = 1'b0;
+
+  // Adder
+  reg  [ADDER_WIDTH-1:0]      adder_a;
+  reg  [ADDER_WIDTH-1:0]      adder_b;
+  wire [ADDER_WIDTH-1:0]      adder_sum;
+  reg                         adder_valid_in;
+  wire [63:0]                 adder_energy;
+  // Register
+  reg  [ADDER_WIDTH-1:0]    register_data_in;
+  wire [ADDER_WIDTH-1:0]    register_data_out;
+  reg                         register_valid_in;
+
+  reg [7:0] reg_driver;
+  reg [7:0] add_driver;
+  reg [7:0] adc_driver = `ADC_DRIVER_IDLE;
+  reg [7:0] state_r;
+  reg [7:0] next_state;
+  reg       done;
+  reg       is_mac_dig, is_mac_an, is_mac_an_last;
+
+  real      array_energy, total_adc_energy, total_dac_energy, total_digital_energy;
+
+  always @(posedge clk) begin
+    if (!rstn) begin
+      dac_valid           <= 1'b0;
+      dac_data            <=    0;
+      adc_capture         <= 1'b0;
+      sram_read_discharge <= 1'b0;
+      sram_write          <= 1'b0;
+      sram_write_data     <=    0;
+      sram_addr           <=    0;
+      register_valid_in   <= 1'b0;
+      adder_valid_in      <= 1'b0;
+      accumulator_capture <= 1'b0;
+      accumulator_reset   <= 1'b0;
+      is_mac_dig              <= 1'b0;
+      reg_driver          <= `REG_DRIVER_IDLE;
+      add_driver          <= `ADD_DRIVER_IDLE;
+      adc_driver           = `ADC_DRIVER_IDLE;
+      state_r             <= `S_IDLE;
+      done                 = 1'b0;
+      next_state           = `S_IDLE;
+      array_energy        <= 0.0;
+      adc_energy_o <= 0.0;
+      dac_energy_o <= 0.0;
+
+      dig_energy_o <= 0.0;
+    end else begin
+      done       = 1'b0;
+      next_state = `S_IDLE;
+      case (state_r)
+        `S_IDLE   :
+        begin
+            array_energy = 0.0;
+            total_adc_energy = 0.0;
+            total_dac_energy = 0.0;
+            total_digital_energy = 0.0;
+
+            accumulator_reset = 1'b0;
+            is_mac_dig        = 1'b0;
+            is_mac_an         = 1'b0;
+            is_mac_an_last    = 1'b0;
+            if (op_i == `OP_NOP) begin
+              next_state = `S_IDLE;
+            end else if (op_i == `OP_WRITE) begin
+              sram_write <= 1'b1;
+              sram_write_data <= data_sram_i;
+              sram_addr <= addr_i;
+              next_state = `S_WRITE;
+            end else if (op_i == `OP_MUL) begin
+              sram_read_discharge <= 1'b1;
+              sram_addr <= addr_i;
+              dac_valid <= 1'b1;
+              dac_data <= data_dac_i;
+              next_state = `S_MUL_DISC;
+            end else if (op_i == `OP_MAC_DIG) begin
+              sram_read_discharge <= 1'b1;
+              sram_addr <= addr_i;
+              dac_valid <= 1'b1;
+              dac_data <= data_dac_i;
+              is_mac_dig = 1'b1;
+              next_state = `S_MUL_DISC;
+            end else if (op_i == `OP_ADD) begin
+              add_driver <= `ADD_DRIVER_EXT;
+              adder_valid_in <= 1'b1;
+              // adder only combinational -> direct latching possible
+              reg_driver <= `REG_DRIVER_ADD;
+              register_valid_in = 1'b1;
+              next_state = `S_ADD_SUM;
+            end else if (op_i == `OP_MAC_AN) begin
+              sram_read_discharge <= 1'b1;
+              sram_addr <= addr_i;
+              dac_valid <= 1'b1;
+              dac_data <= data_dac_i;
+              is_mac_an = 1'b1;
+              next_state = `S_MUL_DISC;
+            end else if (op_i == `OP_MAC_AN_CAP) begin
+              sram_read_discharge <= 1'b1;
+              sram_addr <= addr_i;
+              dac_valid <= 1'b1;
+              dac_data <= data_dac_i;
+              is_mac_an_last = 1'b1;
+              next_state = `S_MUL_DISC;
+            end else if (op_i == `OP_RST_REG) begin
+              reg_driver <= `REG_DRIVER_IDLE;
+              register_valid_in = 1'b1;
+              next_state = `S_RST;
+            end
+          end
+        `S_WRITE :
+          begin
+            # 4.5;
+            array_energy     = array_energy + $bitstoreal(sram_energy);
+            sram_write <= 1'b0;
+            done       = 1'b1;
+            next_state = `S_IDLE;
+          end
+        `S_MUL_DISC :
+          begin
+            sram_read_discharge <= 1'b0;
+            dac_valid <= 1'b0;
+            # DELTA_TIME;
+            if (is_mac_an | is_mac_an_last) begin
+              accumulator_capture = 1'b1;
+              next_state = `S_ACC_AN;
+            end else begin
+              adc_capture <= 1'b1;
+              adc_driver  = `ADC_DRIVER_CS;
+              next_state = `S_MUL_SAMPLE;
+            end
+
+            total_dac_energy = total_dac_energy + $bitstoreal(dac_energy);
+
+          end
+        `S_ACC_AN :
+          begin
+            accumulator_capture = 1'b0;
+            if (is_mac_an_last) begin
+              adc_capture <= 1'b1;
+              adc_driver  = `ADC_DRIVER_ACC;
+              next_state = `S_MUL_SAMPLE;
+            end else if (is_mac_an) begin
+              array_energy      = array_energy + $bitstoreal(sram_energy);
+              done       = 1'b1;
+              next_state = `S_IDLE;
+            end
+          end
+        `S_MUL_SAMPLE :
+          begin
+            adc_capture <= 1'b0;
+            # DELTA_TIME;
+            total_adc_energy = total_adc_energy + $bitstoreal(adc_energy);
+            v_adc_o = $realtobits(V(adc_in_a));
+            if (is_mac_dig) begin
+              add_driver  <= `ADD_DRIVER_MAC;
+              adder_valid_in <= 1'b1;
+              reg_driver  <= `REG_DRIVER_MAC;
+              register_valid_in = 1'b1;
+            end else begin
+              reg_driver  <= `REG_DRIVER_ADC;
+              register_valid_in = 1'b1;
+            end
+            next_state = `S_MUL_LATCH;
+          end
+        `S_MUL_LATCH :
+          begin
+            if (is_mac_dig) begin
+              add_driver  <= `ADD_DRIVER_IDLE;
+              adder_valid_in <= 1'b0;
+              total_digital_energy = total_digital_energy + $bitstoreal(adder_energy);
+            end else if (is_mac_an_last) begin
+              accumulator_reset = 1'b1;
+            end
+            register_valid_in = 1'b0;
+            array_energy      = array_energy + $bitstoreal(sram_energy);
+            reg_driver  <= `REG_DRIVER_IDLE;
+            done       = 1'b1;
+            next_state = `S_IDLE;
+          end
+        `S_ADD_SUM :
+          begin
+            adder_valid_in <= 1'b0;
+            total_digital_energy = total_digital_energy + + $bitstoreal(adder_energy);
+            register_valid_in = 1'b0;
+            reg_driver  <= `REG_DRIVER_IDLE;
+            add_driver <= `ADD_DRIVER_IDLE;
+            done       = 1'b1;
+            next_state = `S_IDLE;
+          end
+        `S_RST :
+          begin
+            register_valid_in = 1'b0;
+            done              = 1'b1;
+            next_state = `S_IDLE;
+          end
+        default : next_state = `S_IDLE;
+      endcase
+    end
+
+    state_r <= next_state;
+    done_o  <= done;
+    array_energy_o <= $realtobits(array_energy);
+    adc_energy_o <= $realtobits(total_adc_energy);
+    dac_energy_o <= $realtobits(total_dac_energy);
+    dig_energy_o <= $realtobits(total_digital_energy);
+  end
+
+  analog begin
+    V(sram_wl_a, dac_out_a) <+ 0.0;
+  end
+
+  dac #(
+    .BIT_WIDTH   (DAC_BIT_WIDTH),
+    .V_FULLSCALE (DAC_V_FS),
+    .V_ZERO      (DAC_V_ZERO)
+  )
+  i_dac (
+    .clk     (clk),
+    .data_i  (dac_data),
+    .v_ao    (dac_out_a),
+    .energy_o(dac_energy),
+    .valid_i (dac_valid)
+  );
+
+  analog begin : adc_input_an
+    if (adc_driver == `ADC_DRIVER_CS) begin
+      V(adc_in_a) <+ V(charge_sharing_sum_a);
+    end else if (adc_driver == `ADC_DRIVER_ACC) begin
+      V(adc_in_a) <+ V(accumulator_out_a);
+    end else begin
+      V(adc_in_a) <+ 0.0;
+    end
+  end
+
+  /*
+   * From Virtuoso:
+   * with vdd=1.0V, T=25°C
+   * vsample = 0.7687 (for 15x15)
+   * -> factor 225/255 -> vsample = 0.7379 (for data=255)
+   * Not that this is not linearly depending on VDD
+   * TODO does not scale with N, analog acc model incomplete
+   */
+  adc #(
+    .BIT_WIDTH   (ADC_BIT_WIDTH),
+    .V_FULLSCALE (MAC_ANALOG  ? 0.5 * VDD  : 1.0  * VDD),
+    .V_ZERO      (MAC_ANALOG  ? 0.223 * VDD : (VDD - 255/225*(VDD-(0.7687 - 1.065*(T0-0.2))))* VDD)
+  )
+  i_adc (
+    .capture_i(adc_capture),
+    .clk      (clk),
+    .rstn     (rstn),
+    .data_o   (adc_data),
+    .energy_o (adc_energy),
+    .v_ai     (adc_in_a)
+  );
+
+  always @* begin : reg_input_mux
+    if (reg_driver == `REG_DRIVER_ADC) begin
+        register_data_in = adc_data;
+    end else if (reg_driver == `REG_DRIVER_ADD || reg_driver == `REG_DRIVER_MAC) begin
+      register_data_in = adder_sum;
+    end else begin
+      register_data_in = 0;
+    end
+  end
+
+  register #(
+    .WIDTH           (ADDER_WIDTH),
+    .VALID_IS_ENABLE (1)
+  )
+  i_register (
+    .clk     (clk),
+    .rstn    (rstn),
+    .data_i  (register_data_in),
+    .data_o  (register_data_out),
+    .valid_i (register_valid_in),
+    .valid_o ()
+  );
+
+  // latch output data in register for every operation
+  assign data_o = register_data_out;
+
+  always @* begin : add_input_mux
+    if (add_driver == `ADD_DRIVER_EXT) begin
+        adder_a   = data_sram_i;
+        adder_b   = data_dac_i;
+      end else if (add_driver == `ADD_DRIVER_MAC) begin
+        adder_a   = adc_data;
+        adder_b   = register_data_out;
+      end else begin
+        adder_a   = 0;
+        adder_b   = 0;
+    end
+  end
+
+  accumulator i_accumulator (
+      .clk(clk),
+      .capture(accumulator_capture),
+      .reset  (accumulator_reset),
+      .v_in_a (charge_sharing_sum_a),
+      .v_out_a(accumulator_out_a)
+  );
+
+  adder #(
+      .WIDTH(ADDER_WIDTH)
+  )
+  i_adder (
+      .a_i  (adder_a),
+      .b_i  (adder_b),
+      .valid_i (adder_valid_in),
+      .c_o  (),  // currently unused
+      .sum_o(adder_sum),
+      .valid_o (),
+      .energy_o(adder_energy)
+  );
+
+  sram #(
+    .ROWS(SRAM_ROWS),
+    .BIT_WIDTH(SRAM_WIDTH),
+    .DISCHARGE_WIDTH(SRAM_WIDTH),
+    .SEED(SEED),
+    .DELTA_TIME(DELTA_TIME),
+    .DISCHARGE_TIME_MIN(T0),
+    .TEMPERATURE(TEMPERATURE),
+    .MISMATCH(MISMATCH)
+  ) i_sram (
+    .clk    (clk),
+    .rstn   (rstn),
+    .read_i (1'b0),  // not implemented
+    .read_discharge_i (sram_read_discharge),
+    .write_i(sram_write),
+    .write_data_i(sram_write_data),
+    .read_data_o(),
+    .addr_i (sram_addr),
+    .v_wl_ai(sram_wl_a),
+    .v_blb_ao(sram_blb_a),
+    .vdd(vdd),
+    .sampling_start_o(sram_start_capture),
+    .energy_o(sram_energy)
+  );
+
+  charge_sharing #(
+    .WIDTH(SRAM_WIDTH),
+    .T_DELTA(DELTA_TIME),
+    .T0(T0)
+  )
+  i_charge_sharing (
+    .start  (sram_start_capture),
+    .v_blb_a(sram_blb_a),
+    .v_sum_a(charge_sharing_sum_a)
+  );
+
+endmodule

@@ -1,0 +1,238 @@
+`include "disciplines.vams"
+`include "constants.vams"
+
+`include "timescale.v"
+`include "util.v"
+
+module test;
+  localparam CLOCK_PERIOD  = 6;  // 166.7 MHz
+  localparam SRAM_WIDTH    = 4;
+  localparam SRAM_ROWS     = 2;
+  localparam real VDD      = 1.0;
+  localparam SEED          = 42;
+
+  localparam DELTA_TIME   = 0.05;
+  localparam T0           = 0.2;
+
+  // TODO the tool does not like this
+  // +1 to have an address line even in the case of a single row
+  localparam SRAM_ADDR_WIDTH = 2; // $clog2(SRAM_ROWS) + 1;
+
+  reg clk  = 0;
+  reg rstn = 0;
+
+  integer read_data = 0;
+
+  real v_an = 0.0;
+
+  electrical gnd, vdd;
+  ground gnd;
+
+
+  analog begin
+    V(vdd, gnd) <+ VDD;
+  end
+
+  analog begin : a
+    V(sram_v_wl_a) <+ v_an;
+  end
+
+
+  // SRAM
+  wire [SRAM_WIDTH-1:0]        sram_read_data;
+  reg [SRAM_WIDTH-1:0]         sram_write_data      = 0;
+  reg [SRAM_ADDR_WIDTH-1:0]    sram_addr            = 0;
+  reg                          sram_write           = 0;
+  reg                          sram_read            = 0;
+  reg                          sram_read_discharge  = 0;
+
+  voltage [SRAM_WIDTH-1:0]     sram_v_blb_a;
+  voltage                      sram_v_wl_a;
+
+  // Charge Sharing
+  wire                         charge_sharing_start;
+  electrical                   sum_a;
+
+  // Clock generation
+  always begin
+    #(0.5*CLOCK_PERIOD) clk = 1;
+    #(0.5*CLOCK_PERIOD) clk = 0;
+  end
+
+  // Test case sequence
+  initial begin
+    repeat(2) @(posedge clk);
+    $display("%7t ps: Starting tests", $realtime);
+    rstn = 1;
+
+    SRAMWrite(2, 0);
+    SRAMWrite(3, 0);
+
+    SRAMWrite(58, 1);
+    SRAMWrite(15, 2);
+    SRAMWrite(15, 2);
+
+    SRAMReadDischarge(read_data, 0, 0);
+    SRAMReadDischarge(read_data, 7, 0);
+    SRAMReadDischarge(read_data, 15, 0);
+
+    SRAMRead(read_data, 0);
+    SRAMRead(read_data, 1);
+    SRAMRead(read_data, 2);
+
+    repeat(10) @(posedge clk);
+    $display("%7t ps: Finishing simulation", $realtime);
+    $finish;
+  end
+
+
+  sram #(
+    .ROWS(SRAM_ROWS),
+    .BIT_WIDTH(SRAM_WIDTH),
+    .SEED(SEED),
+    .DELTA_TIME(DELTA_TIME),
+    .DISCHARGE_TIME_MIN(T0)
+  ) i_sram (
+    .clk    (clk),
+    .rstn   (rstn),
+    .read_i (sram_read),
+    .read_discharge_i (sram_read_discharge),
+    .write_i(sram_write),
+    .write_data_i(sram_write_data),
+    .read_data_o(sram_read_data),
+    .addr_i (sram_addr),
+    .v_wl_ai(sram_v_wl_a),
+    .v_blb_ao(sram_v_blb_a),
+    .vdd(vdd),
+    .sampling_start_o(charge_sharing_start)
+  );
+
+  charge_sharing #(
+    .WIDTH(SRAM_WIDTH),
+    .T_DELTA(DELTA_TIME),
+    .T0(T0)
+  )
+  i_charge_sharing (
+    .start  (charge_sharing_start),
+    .v_blb_a(sram_v_blb_a),
+    .v_sum_a(sum_a)
+  );
+
+  /*
+   * Utility tasks
+   * All tasks are blocking, i.e. they return once the operation is finished
+   * Thus they do not check if an earlier operation has finished
+   */
+
+  task SRAMWrite(
+    input integer write_data,
+    input integer write_addr
+  );
+  begin
+    if(~rstn) begin
+      @(posedge rstn);
+    end
+    $display("%7t ps: Writing %3x to %3x", $realtime, write_data, write_addr);
+
+    sram_write          = 1;
+    sram_read           = 0;
+    sram_read_discharge = 0;
+    if ($unsigned(write_data) > 2**SRAM_WIDTH -1) begin
+      $warning("SRAM write data %3x larger than SRAM row. The MSB(s) are truncated.", write_data);
+    end
+    if ($unsigned(write_addr) > SRAM_ROWS -1) begin
+      $warning("SRAM write addr %3x larger than SRAM block. The MSB(s) are truncated.", write_addr);
+    end
+
+    sram_write_data = write_data[SRAM_WIDTH-1:0];
+    sram_addr[SRAM_ADDR_WIDTH-1] = 1'b0;
+    if (SRAM_ROWS > 1) begin
+      sram_addr[SRAM_ADDR_WIDTH-2:0] = write_addr[SRAM_ADDR_WIDTH-2:0];
+    end
+    @(posedge clk);
+    sram_write = 0;
+  end
+  endtask
+
+  task SRAMRead(
+    output integer read_data,
+    input  integer read_addr
+  );
+  begin
+    if(~rstn) begin
+      @(posedge rstn);
+    end
+
+    sram_write          = 0;
+    sram_read           = 1;
+    sram_read_discharge = 0;
+
+    if ($unsigned(read_addr) > SRAM_ROWS-1) begin
+      $warning("SRAM read addr %3x larger than SRAM block. The MSB(s) are truncated.", read_addr);
+    end
+
+    if (SRAM_ROWS == 1) begin
+      sram_addr = 0;
+    end else begin
+      sram_addr[SRAM_ADDR_WIDTH-1] = 1'b0;
+      if (SRAM_ROWS > 1) begin
+        sram_addr[SRAM_ADDR_WIDTH-2:0] = read_addr[SRAM_ADDR_WIDTH-2:0];
+      end
+    end
+
+    @(posedge clk)
+    sram_read = 0;
+
+    @(posedge clk)
+
+    // This only works up to 32 bits
+    read_data = sram_read_data;
+    $display("%7t ps: Read %3x from %3x", $realtime, read_data, read_addr);
+  end
+  endtask
+
+  task SRAMReadDischarge(
+    output integer result,
+    input  integer multiplicand,
+    input  integer read_addr
+  );
+  begin
+    if(~rstn) begin
+      @(posedge rstn);
+    end
+
+    sram_write          = 0;
+    sram_read           = 0;
+    sram_read_discharge = 1;
+
+    if ($unsigned(read_addr) > SRAM_ROWS-1) begin
+      $warning("SRAM read addr %3x larger than SRAM block. The MSB(s) are truncated.", read_addr);
+    end
+
+    if (SRAM_ROWS == 1) begin
+      sram_addr = 0;
+    end else begin
+      sram_addr[SRAM_ADDR_WIDTH-1] = 1'b0;
+      if (SRAM_ROWS > 1) begin
+        sram_addr[SRAM_ADDR_WIDTH-2:0] = read_addr[SRAM_ADDR_WIDTH-2:0];
+      end
+    end
+
+    if ($unsigned(multiplicand) > 15) begin
+      $warning("SRAM multiplicand %3x larger than DAC. The MSB(s) are truncated.", multiplicand);
+      multiplicand = 15;
+    end
+
+    v_an = 0.3 + 0.84 * $sqrt(0.046* multiplicand);
+
+    @(posedge clk);
+
+    sram_read_discharge = 0;
+
+    @(posedge clk);
+
+    // TODO get data
+  end
+  endtask
+
+endmodule

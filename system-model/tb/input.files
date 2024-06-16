@@ -1,0 +1,3 @@
+../digital/adder.v
+../digital/register.v
+tb_top.sv
