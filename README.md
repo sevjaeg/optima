@@ -3,11 +3,28 @@
 OPTIMA is a set of tools for fast design-space explorations for discharge-based in-SRAM computing circuits.
 It was presented at the [2024 Design Automation Conference](https://www.dac.com/).
 
-> TODO bibtex entry, link once proceedings are available
->
 > [Saeed Seyedfaraji](mailto:saeed.seyedfaraji@tuwien.ac.at), [Severin Jäger](mailto:e1613004@student.tuwien.ac.at), Salar Shakibhamedan, Asad Aftab, Semeen Rehman
 >
 > OPTIMA: Design-Space Exploration of Discharge-Based In-SRAM Computing: Quantifying Energy-Accuracy Trade-offs
+>
+> DOI: [10.1145/3649329.3661852](https://doi.org/10.1145/3649329.3661852)
+>
+> ```Latex
+> @inproceedings{optima,
+>   author = {Seyedfaraji, Saeed and Jäger, Severin and Shakibhamedan, Salar and Aftab, Asad and Rehman, Semeen},
+>   title = {OPTIMA: Design-Space Exploration of Discharge-Based In-SRAM Computing: Quantifying Energy-Accuracy Trade-Offs},
+>   year = {2024},
+>   publisher = {Association for Computing Machinery},
+>   address = {New York, NY, USA},
+>   url = {https://doi.org/10.1145/3649329.3661852},
+>   doi = {10.1145/3649329.3661852},
+>   booktitle = {Proceedings of the 61st ACM/IEEE Design Automation Conference},
+>   articleno = {331},
+>   numpages = {6},
+>   location = {San Francisco, CA, USA},
+>   series = {DAC '24}
+> }
+> ```
 
 The code in this repository is split into two parts:
 
